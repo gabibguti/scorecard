@@ -22,6 +22,7 @@ import (
 
 	"github.com/ossf/scorecard/v4/clients"
 	sce "github.com/ossf/scorecard/v4/errors"
+	"github.com/ossf/scorecard/v4/log"
 )
 
 // isMatchingPath uses 'pattern' to shell-match the 'path' and its filename
@@ -73,6 +74,8 @@ type DoWhileTrueOnFileContent func(path string, content []byte, args ...interfac
 func OnMatchingFileContentDo(repoClient clients.RepoClient, matchPathTo PathMatcher,
 	onFileContent DoWhileTrueOnFileContent, args ...interface{},
 ) error {
+	l := log.NewLogger(log.InfoLevel)
+	l.Logger.Info(">>>> On Matching File Content")
 	predicate := func(filepath string) (bool, error) {
 		// Filter out test files.
 		if isTestdataFile(filepath) {
@@ -93,6 +96,7 @@ func OnMatchingFileContentDo(repoClient clients.RepoClient, matchPathTo PathMatc
 
 	for _, file := range matchedFiles {
 		content, err := repoClient.GetFileContent(file)
+
 		if err != nil {
 			return fmt.Errorf("error during GetFileContent: %w", err)
 		}

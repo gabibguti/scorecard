@@ -19,6 +19,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
+	"os"
 	"strconv"
 	"time"
 
@@ -379,6 +381,10 @@ func (r *jsonScorecardRawResult) addPackagingRawResults(pk *checker.PackagingDat
 //nolint:unparam
 func (r *jsonScorecardRawResult) addDependencyPinningRawResults(pd *checker.PinningDependenciesData) error {
 	r.Results.DependencyPinning = jsonPinningDependenciesData{}
+
+	file, _ := os.OpenFile("gabriela.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
+	log.SetOutput(file)
+
 	for i := range pd.Dependencies {
 		rr := pd.Dependencies[i]
 		if rr.Location == nil {
@@ -395,6 +401,8 @@ func (r *jsonScorecardRawResult) addDependencyPinningRawResults(pd *checker.Pinn
 			PinnedAt: rr.PinnedAt,
 			Type:     string(rr.Type),
 		}
+
+		log.Println(v.Location.Snippet)
 
 		if rr.Location.Snippet != "" {
 			v.Location.Snippet = &rr.Location.Snippet

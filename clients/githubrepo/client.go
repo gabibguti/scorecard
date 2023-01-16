@@ -66,6 +66,9 @@ func (client *Client) InitRepo(inputRepo clients.Repo, commitSHA string, commitD
 		return fmt.Errorf("%w: %v", errInputRepoType, inputRepo)
 	}
 
+	logger := log.NewLogger(log.InfoLevel)
+	logger.Logger.Info(">>>>>>> init repo")
+
 	// Sanity check.
 	repo, _, err := client.repoClient.Repositories.Get(client.ctx, ghRepo.owner, ghRepo.repo)
 	if err != nil {

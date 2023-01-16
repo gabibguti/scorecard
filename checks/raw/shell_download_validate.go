@@ -29,6 +29,7 @@ import (
 
 	"github.com/ossf/scorecard/v4/checker"
 	sce "github.com/ossf/scorecard/v4/errors"
+	"github.com/ossf/scorecard/v4/log"
 )
 
 var (
@@ -326,6 +327,11 @@ func collectFetchPipeExecute(startLine, endLine uint, node syntax.Node, cmd, pat
 
 	startLine, endLine = getLine(startLine, endLine, node)
 
+	l := log.NewLogger(log.InfoLevel)
+	l.Logger.Info(">>>>>> collectFetchPipeExecute")
+
+	// Same question, when is it ok to execute fetch pipe? Or is it never ok?
+
 	r.Dependencies = append(r.Dependencies,
 		checker.Dependency{
 			Location: &checker.File{
@@ -335,7 +341,8 @@ func collectFetchPipeExecute(startLine, endLine uint, node syntax.Node, cmd, pat
 				EndOffset: endLine,
 				Snippet:   cmd,
 			},
-			Type: checker.DependencyUseTypeDownloadThenRun,
+			Pinned: false,
+			Type:   checker.DependencyUseTypeDownloadThenRun,
 		},
 	)
 }
@@ -376,6 +383,7 @@ func collectExecuteFiles(startLine, endLine uint, node syntax.Node, cmd, pathfn 
 
 	startLine, endLine = getLine(startLine, endLine, node)
 	for fn := range files {
+		// When is ok to be an execute file or not, or is it always wrong?
 		if isInterpreterWithFile(c, fn) || isExecuteFile(c, fn) {
 			r.Dependencies = append(r.Dependencies,
 				checker.Dependency{
@@ -386,20 +394,18 @@ func collectExecuteFiles(startLine, endLine uint, node syntax.Node, cmd, pathfn 
 						EndOffset: endLine,
 						Snippet:   cmd,
 					},
-					Type: checker.DependencyUseTypeDownloadThenRun,
+					Pinned: false,
+					Type:   checker.DependencyUseTypeDownloadThenRun,
 				},
 			)
 		}
 	}
 }
 
+// i believe i disagree all installs are unsafe. when there is packagge-lock.json it saves the hashes. is it safe then?
 // Npm install docs are here.
 // https://docs.npmjs.com/cli/v7/commands/npm-install
-func isNpmUnpinnedDownload(cmd []string) bool {
-	if len(cmd) == 0 {
-		return false
-	}
-
+func isNpmDownload(cmd []string) bool {
 	if !isBinaryName("npm", cmd[0]) {
 		return false
 	}
@@ -413,56 +419,54 @@ func isNpmUnpinnedDownload(cmd []string) bool {
 			strings.EqualFold(cmd[i], "update") {
 			return true
 		}
+		// I believe there are missing aliases here
+		// npm add
 	}
 	return false
 }
 
-func isGoUnpinnedDownload(cmd []string) bool {
-	if len(cmd) == 0 {
-		return false
-	}
-
-	if !isBinaryName("go", cmd[0]) {
-		return false
-	}
+func isGoDownload(cmd []string) bool {
 	// `Go install` will automatically look up the
 	// go.mod and go.sum, so we don't flag it.
 	if len(cmd) <= 2 {
 		return false
 	}
 
-	found := false
+	return isBinaryName("go", cmd[0]) && slices.Contains([]string{"get", "install"}, cmd[1])
+}
+
+func isGoUnpinnedDownload(cmd []string) bool {
 	insecure := false
 	hashRegex := regexp.MustCompile("^[A-Fa-f0-9]{40,}$")
 	semverRegex := regexp.MustCompile(`^v\d+\.\d+\.\d+(-[0-9A-Za-z-.]+)?(\+[0-9A-Za-z-.]+)?$`)
-	for i := 1; i < len(cmd)-1; i++ {
-		// Search for get and install commands.
-		if slices.Contains([]string{"get", "install"}, cmd[i]) {
-			found = true
-		}
+	l := log.NewLogger(log.InfoLevel)
+	l.Logger.Info("Go command")
 
-		if !found {
-			continue
+	for i := 2; i < len(cmd); i++ {
+		l.Logger.Info(cmd[i])
+
+		// -d flags intructs to download but don't install the package
+		if strings.EqualFold(cmd[i], "-d") {
+			return false
 		}
 
 		// Skip all flags
 		// TODO skip other build flags which might take arguments
-		for i < len(cmd)-1 && slices.Contains([]string{"-d", "-f", "-t", "-u", "-v", "-fix", "-insecure"}, cmd[i+1]) {
+		if slices.Contains([]string{"-f", "-t", "-u", "-v", "-fix", "-insecure"}, cmd[i]) {
 			// Record the flag -insecure
-			if cmd[i+1] == "-insecure" {
+			if cmd[i] == "-insecure" {
 				insecure = true
 			}
-			i++
+			continue
 		}
 
-		if i+1 >= len(cmd) {
-			// this is case go get -d -v
-			return false
-		}
-		// TODO check more than one package
-		pkg := cmd[i+1]
+		l.Logger.Info("parse go pkg")
+
+		// TODO check more than one package => I think the changes will solve this => nope
+		pkg := cmd[i]
 		// Consider strings that are not URLs as local folders
 		// which are pinned.
+		// TODO: What is going on with this regex?
 		regex := regexp.MustCompile(`\w+\.\w+/\w+`)
 		if !regex.MatchString(pkg) {
 			return false
@@ -470,6 +474,7 @@ func isGoUnpinnedDownload(cmd []string) bool {
 		// Verify pkg = name@hash
 		parts := strings.Split(pkg, "@")
 
+		// If does not have 2 parts does not mean it's not pinned?
 		if len(parts) != 2 {
 			continue
 		}
@@ -478,34 +483,30 @@ func isGoUnpinnedDownload(cmd []string) bool {
 			"none" is special. It removes a dependency. Hashes are always okay. Full semantic versions are okay
 			as long as "-insecure" is not passed.
 		*/
+		l.Logger.Info(version)
 		if version == "none" || hashRegex.MatchString(version) || (!insecure && semverRegex.MatchString(version)) {
 			return false
 		}
 	}
 
-	return found
+	return true
 }
 
-func isUnpinnedPipInstall(cmd []string) bool {
-	if !isBinaryName("pip", cmd[0]) && !isBinaryName("pip3", cmd[0]) {
+func isPipInstall(cmd []string) bool {
+	if len(cmd) < 2 {
 		return false
 	}
 
-	isInstall := false
+	// I am assuming pip or pip3 needs to be followed by install, otherwise is another pip cmd
+	return (isBinaryName("pip", cmd[0]) || isBinaryName("pip3", cmd[0])) && strings.EqualFold(cmd[1], "install")
+}
+
+// Assumes cmd is pip install already
+func isUnpinnedPipInstall(cmd []string) bool {
 	hasRequireHashes := false
 	hasAdditionalArgs := false
 	hasWheel := false
-	for i := 1; i < len(cmd); i++ {
-		// Search for install commands.
-		if strings.EqualFold(cmd[i], "install") {
-			isInstall = true
-			continue
-		}
-
-		if !isInstall {
-			break
-		}
-
+	for i := 2; i < len(cmd); i++ {
 		// https://github.com/ossf/scorecard/issues/1306#issuecomment-974539197.
 		if strings.EqualFold(cmd[i], "--require-hashes") {
 			hasRequireHashes = true
@@ -543,7 +544,7 @@ func isUnpinnedPipInstall(cmd []string) bool {
 
 	// Any other form of install is unpinned,
 	// e.g. `pip install`.
-	return isInstall
+	return true
 }
 
 func isPythonCommand(cmd []string) bool {
@@ -571,49 +572,53 @@ func extractPipCommand(cmd []string) ([]string, bool) {
 	return nil, false
 }
 
-func isUnpinnedPythonPipInstall(cmd []string) bool {
+func isPythonPipInstall(cmd []string) bool {
 	if !isPythonCommand(cmd) {
 		return false
 	}
+
 	pipCommand, ok := extractPipCommand(cmd)
 	if !ok {
 		return false
 	}
+
+	return isPipInstall(pipCommand)
+}
+
+func isUnpinnedPythonPipInstall(cmd []string) bool {
+	pipCommand, _ := extractPipCommand(cmd)
 	return isUnpinnedPipInstall(pipCommand)
 }
 
-func isPipUnpinnedDownload(cmd []string) bool {
-	if len(cmd) == 0 {
-		return false
-	}
+func isPipDownload(cmd []string) bool {
+	return isPipInstall(cmd) || isPythonPipInstall(cmd)
+}
 
-	if isUnpinnedPipInstall(cmd) {
+// This is bad
+func isPipUnpinnedDownload(cmd []string) bool {
+	if isPipInstall(cmd) && isUnpinnedPipInstall(cmd) {
 		return true
 	}
 
-	if isUnpinnedPythonPipInstall(cmd) {
+	if isPythonPipInstall(cmd) && isUnpinnedPythonPipInstall(cmd) {
 		return true
 	}
 
 	return false
 }
 
-func isChocoUnpinnedDownload(cmd []string) bool {
+func isChocoDownload(cmd []string) bool {
 	// Install command is in the form 'choco install ...'
 	if len(cmd) < 2 {
 		return false
 	}
 
-	if !isBinaryName("choco", cmd[0]) && !isBinaryName("choco.exe", cmd[0]) {
-		return false
-	}
+	return (isBinaryName("choco", cmd[0]) || isBinaryName("choco.exe", cmd[0])) && strings.EqualFold(cmd[1], "install")
+}
 
-	if !strings.EqualFold(cmd[1], "install") {
-		return false
-	}
-
+func isChocoUnpinnedDownload(cmd []string) bool {
 	// If this is an install command, then some variant of requirechecksum must be present.
-	for i := 1; i < len(cmd); i++ {
+	for i := 2; i < len(cmd); i++ {
 		parts := strings.Split(cmd[i], "=")
 		if len(parts) == 0 {
 			continue
@@ -646,8 +651,12 @@ func collectUnpinnedPakageManagerDownload(startLine, endLine uint, node syntax.N
 
 	startLine, endLine = getLine(startLine, endLine, node)
 
+	if len(c) == 0 {
+		return
+	}
+
 	// Go get/install.
-	if isGoUnpinnedDownload(c) {
+	if isGoDownload(c) {
 		r.Dependencies = append(r.Dependencies,
 			checker.Dependency{
 				Location: &checker.File{
@@ -657,7 +666,8 @@ func collectUnpinnedPakageManagerDownload(startLine, endLine uint, node syntax.N
 					EndOffset: endLine,
 					Snippet:   cmd,
 				},
-				Type: checker.DependencyUseTypeGoCommand,
+				Pinned: !isGoUnpinnedDownload(c),
+				Type:   checker.DependencyUseTypeGoCommand,
 			},
 		)
 
@@ -665,7 +675,7 @@ func collectUnpinnedPakageManagerDownload(startLine, endLine uint, node syntax.N
 	}
 
 	// Pip install.
-	if isPipUnpinnedDownload(c) {
+	if isPipDownload(c) {
 		r.Dependencies = append(r.Dependencies,
 			checker.Dependency{
 				Location: &checker.File{
@@ -675,7 +685,8 @@ func collectUnpinnedPakageManagerDownload(startLine, endLine uint, node syntax.N
 					EndOffset: endLine,
 					Snippet:   cmd,
 				},
-				Type: checker.DependencyUseTypePipCommand,
+				Pinned: !isPipUnpinnedDownload(c),
+				Type:   checker.DependencyUseTypePipCommand,
 			},
 		)
 
@@ -683,7 +694,7 @@ func collectUnpinnedPakageManagerDownload(startLine, endLine uint, node syntax.N
 	}
 
 	// Npm install.
-	if isNpmUnpinnedDownload(c) {
+	if isNpmDownload(c) {
 		r.Dependencies = append(r.Dependencies,
 			checker.Dependency{
 				Location: &checker.File{
@@ -693,7 +704,8 @@ func collectUnpinnedPakageManagerDownload(startLine, endLine uint, node syntax.N
 					EndOffset: endLine,
 					Snippet:   cmd,
 				},
-				Type: checker.DependencyUseTypeNpmCommand,
+				Pinned: false,
+				Type:   checker.DependencyUseTypeNpmCommand,
 			},
 		)
 
@@ -701,7 +713,7 @@ func collectUnpinnedPakageManagerDownload(startLine, endLine uint, node syntax.N
 	}
 
 	// Choco install.
-	if isChocoUnpinnedDownload(c) {
+	if isChocoDownload(c) {
 		r.Dependencies = append(r.Dependencies,
 			checker.Dependency{
 				Location: &checker.File{
@@ -711,7 +723,8 @@ func collectUnpinnedPakageManagerDownload(startLine, endLine uint, node syntax.N
 					EndOffset: endLine,
 					Snippet:   cmd,
 				},
-				Type: checker.DependencyUseTypeChocoCommand,
+				Pinned: !isChocoUnpinnedDownload(c),
+				Type:   checker.DependencyUseTypeChocoCommand,
 			},
 		)
 
@@ -746,6 +759,7 @@ func recordFetchFileFromNode(node syntax.Node) (pathfn string, ok bool, err erro
 func collectFetchProcSubsExecute(startLine, endLine uint, node syntax.Node, cmd, pathfn string,
 	r *checker.PinningDependenciesData,
 ) {
+	// Is everything not valid? Or is there a case where executing fetch proc subs, whatever that is not good?
 	ce, ok := node.(*syntax.CallExpr)
 	if !ok {
 		return
@@ -806,7 +820,8 @@ func collectFetchProcSubsExecute(startLine, endLine uint, node syntax.Node, cmd,
 				EndOffset: endLine,
 				Snippet:   cmd,
 			},
-			Type: checker.DependencyUseTypeDownloadThenRun,
+			Pinned: false,
+			Type:   checker.DependencyUseTypeDownloadThenRun,
 		},
 	)
 }

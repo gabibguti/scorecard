@@ -27,6 +27,7 @@ import (
 	"github.com/ossf/scorecard/v4/checker"
 	"github.com/ossf/scorecard/v4/clients"
 	sce "github.com/ossf/scorecard/v4/errors"
+	"github.com/ossf/scorecard/v4/log"
 )
 
 func runEnabledChecks(ctx context.Context,
@@ -44,6 +45,8 @@ func runEnabledChecks(ctx context.Context,
 		Repo:                  repo,
 		RawResults:            raw,
 	}
+	l := log.NewLogger(log.InfoLevel)
+	l.Logger.Info(">>>>> run enabled checks")
 	wg := sync.WaitGroup{}
 	for checkName, checkFn := range checksToRun {
 		checkName := checkName
@@ -61,6 +64,7 @@ func runEnabledChecks(ctx context.Context,
 		}()
 	}
 	wg.Wait()
+	l.Logger.Info(raw.PinningDependenciesResults.Dependencies[0].Location.Snippet)
 	close(resultsCh)
 }
 
@@ -117,6 +121,9 @@ func RunScorecard(ctx context.Context,
 	resultsCh := make(chan checker.CheckResult)
 	go runEnabledChecks(ctx, repo, &ret.RawResults, checksToRun, repoClient, ossFuzzRepoClient,
 		ciiClient, vulnsClient, resultsCh)
+
+	l := log.NewLogger(log.InfoLevel)
+	l.Logger.Info(">>>>> before results")
 
 	for result := range resultsCh {
 		ret.Checks = append(ret.Checks, result)

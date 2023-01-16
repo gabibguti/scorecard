@@ -17,6 +17,8 @@ package evaluation
 import (
 	"errors"
 	"fmt"
+	"log"
+	"os"
 
 	"github.com/ossf/scorecard/v4/checker"
 	"github.com/ossf/scorecard/v4/checks/fileparser"
@@ -27,12 +29,6 @@ import (
 var errInvalidValue = errors.New("invalid value")
 
 type pinnedResult int
-
-const (
-	pinnedUndefined pinnedResult = iota
-	pinned
-	notPinned
-)
 
 // Structure to host information about pinned github
 // or third party dependencies.
@@ -45,6 +41,11 @@ type worklowPinningResult struct {
 func PinningDependencies(name string, c *checker.CheckRequest,
 	r *checker.PinningDependenciesData,
 ) checker.CheckResult {
+	file, _ := os.OpenFile("gabriela.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
+	log.SetOutput(file)
+
+	log.Println(r.Dependencies[0].Location.Snippet)
+
 	if r == nil {
 		e := sce.WithMessage(sce.ErrScorecardInternal, "empty raw data")
 		return checker.CreateRuntimeErrorResult(name, e)
@@ -58,6 +59,12 @@ func PinningDependencies(name string, c *checker.CheckRequest,
 
 	for i := range r.Dependencies {
 		rr := r.Dependencies[i]
+		log.Println("dep")
+		log.Println(rr.Location.Path)
+		log.Println(rr.Location.Snippet)
+		log.Println(rr.Type)
+		log.Println(rr.Msg)
+
 		if rr.Location == nil {
 			if rr.Msg == nil {
 				e := sce.WithMessage(sce.ErrScorecardInternal, "empty File field")
@@ -90,7 +97,7 @@ func PinningDependencies(name string, c *checker.CheckRequest,
 			})
 
 			// Update the pinning status.
-			updatePinningResults(&rr, &wp, pr)
+			// updatePinningResults(&rr, &wp, pr)
 		}
 	}
 
@@ -148,20 +155,18 @@ func generateRemediation(remediaitonMd remediation.RemediationMetadata, rr *chec
 }
 
 func updatePinningResults(rr *checker.Dependency,
-	wp *worklowPinningResult, pr map[checker.DependencyUseType]pinnedResult,
+	wp *worklowPinningResult, pr map[checker.DependencyUseType]*pinnedResult,
 ) {
 	if rr.Type == checker.DependencyUseTypeGHAction {
 		// Note: `Snippet` contains `action/name@xxx`, so we cna use it to infer
 		// if it's a GitHub-owned action or not.
 		gitHubOwned := fileparser.IsGitHubOwnedAction(rr.Location.Snippet)
-		addWorkflowPinnedResult(wp, false, gitHubOwned)
+		addWorkflowPinnedResult(wp, gitHubOwned)
 		return
 	}
 
 	// Update other result types.
-	var p pinnedResult
-	addPinnedResult(&p, false)
-	pr[rr.Type] = p
+	addPinnedResult(pr[rr.Type])
 }
 
 func generateText(rr *checker.Dependency) string {
@@ -183,7 +188,7 @@ func generateOwnerToDisplay(gitHubOwned bool) string {
 }
 
 // TODO(laurent): need to support GCB pinning.
-//nolint
+// nolint
 func maxScore(s1, s2 int) int {
 	if s1 > s2 {
 		return s1
@@ -191,28 +196,15 @@ func maxScore(s1, s2 int) int {
 	return s2
 }
 
-// For the 'to' param, true means the file is pinning dependencies (or there are no dependencies),
-// false means there are unpinned dependencies.
-func addPinnedResult(r *pinnedResult, to bool) {
-	// If the result is `notPinned`, we keep it.
-	// In other cases, we always update the result.
-	if *r == notPinned {
-		return
-	}
-
-	switch to {
-	case true:
-		*r = pinned
-	case false:
-		*r = notPinned
-	}
+func addPinnedResult(r *pinnedResult) {
+	*r += 1
 }
 
-func addWorkflowPinnedResult(w *worklowPinningResult, to, isGitHub bool) {
+func addWorkflowPinnedResult(w *worklowPinningResult, isGitHub bool) {
 	if isGitHub {
-		addPinnedResult(&w.gitHubOwned, to)
+		addPinnedResult(&w.gitHubOwned)
 	} else {
-		addPinnedResult(&w.thirdParties, to)
+		addPinnedResult(&w.thirdParties)
 	}
 }
 
@@ -254,14 +246,14 @@ func createReturnValues(pr map[checker.DependencyUseType]pinnedResult,
 	switch r {
 	default:
 		return checker.InconclusiveResultScore, fmt.Errorf("%w: %v", errInvalidValue, r)
-	case pinned, pinnedUndefined:
-		dl.Info(&checker.LogMessage{
-			Text: infoMsg,
-		})
-		return checker.MaxResultScore, nil
-	case notPinned:
-		// No logging needed as it's done by the checks.
-		return checker.MinResultScore, nil
+		// case pinned, pinnedUndefined:
+		// 	dl.Info(&checker.LogMessage{
+		// 		Text: infoMsg,
+		// 	})
+		// 	return checker.MaxResultScore, nil
+		// case notPinned:
+		// 	// No logging needed as it's done by the checks.
+		// 	return checker.MinResultScore, nil
 	}
 }
 
@@ -277,23 +269,23 @@ func createReturnValuesForGitHubActionsWorkflowPinned(r worklowPinningResult, in
 ) (int, error) {
 	score := checker.MinResultScore
 
-	if r.gitHubOwned != notPinned {
-		score += 2
-		dl.Info(&checker.LogMessage{
-			Type:   checker.FileTypeSource,
-			Offset: checker.OffsetDefault,
-			Text:   fmt.Sprintf("%s %s", "GitHub-owned", infoMsg),
-		})
-	}
+	// if r.gitHubOwned != notPinned {
+	// 	score += 2
+	// 	dl.Info(&checker.LogMessage{
+	// 		Type:   checker.FileTypeSource,
+	// 		Offset: checker.OffsetDefault,
+	// 		Text:   fmt.Sprintf("%s %s", "GitHub-owned", infoMsg),
+	// 	})
+	// }
 
-	if r.thirdParties != notPinned {
-		score += 8
-		dl.Info(&checker.LogMessage{
-			Type:   checker.FileTypeSource,
-			Offset: checker.OffsetDefault,
-			Text:   fmt.Sprintf("%s %s", "Third-party", infoMsg),
-		})
-	}
+	// if r.thirdParties != notPinned {
+	// 	score += 8
+	// 	dl.Info(&checker.LogMessage{
+	// 		Type:   checker.FileTypeSource,
+	// 		Offset: checker.OffsetDefault,
+	// 		Text:   fmt.Sprintf("%s %s", "Third-party", infoMsg),
+	// 	})
+	// }
 
 	return score, nil
 }

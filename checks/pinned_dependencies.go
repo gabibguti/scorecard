@@ -19,6 +19,7 @@ import (
 	"github.com/ossf/scorecard/v4/checks/evaluation"
 	"github.com/ossf/scorecard/v4/checks/raw"
 	sce "github.com/ossf/scorecard/v4/errors"
+	"github.com/ossf/scorecard/v4/log"
 )
 
 // CheckPinnedDependencies is the registered name for FrozenDeps.
@@ -38,7 +39,9 @@ func init() {
 
 // PinningDependencies will check the repository for its use of dependencies.
 func PinningDependencies(c *checker.CheckRequest) checker.CheckResult {
-	rawData, err := raw.PinningDependencies(c)
+	l := log.NewLogger(log.InfoLevel)
+	l.Logger.Info(">>>>> Default Pinned Dependencies")
+	rawData, err := raw.PinningDependencies(c) // Parse dependencies
 	if err != nil {
 		e := sce.WithMessage(sce.ErrScorecardInternal, err.Error())
 		return checker.CreateRuntimeErrorResult(CheckPinnedDependencies, e)
@@ -49,5 +52,5 @@ func PinningDependencies(c *checker.CheckRequest) checker.CheckResult {
 		c.RawResults.PinningDependenciesResults = rawData
 	}
 
-	return evaluation.PinningDependencies(CheckPinnedDependencies, c, &rawData)
+	return evaluation.PinningDependencies(CheckPinnedDependencies, c, &rawData) // Run evaluation
 }
